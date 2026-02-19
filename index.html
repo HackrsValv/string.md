@@ -547,6 +547,9 @@ function saveHistory() {
 }
 
 function addHistoryEntry(content) {
+  // Skip storing history when document is encrypted to avoid writing
+  // plaintext content to localStorage (which would defeat E2E encryption).
+  if (currentPassword) return;
   if (!content.trim()) return;
   if (historyEntries.length && historyEntries[0].content === content) return;
   historyEntries.unshift({ id: crypto.randomUUID(), time: new Date().toISOString(), content, encrypted: !!currentPassword });
@@ -566,14 +569,22 @@ async function renderHistory(gitLog) {
     historyList.appendChild(label);
 
     gitLog.forEach(commit => {
+      if (!commit || typeof commit !== 'object') return;
+      const sha = typeof commit.sha === 'string' && commit.sha.length >= 4 ? commit.sha : null;
+      if (!sha) return;
+      const message = typeof commit.message === 'string' ? commit.message : '';
+      const author  = typeof commit.author  === 'string' ? commit.author  : 'Unknown';
+      const d = commit.date ? new Date(commit.date) : null;
+      const dateStr = (d && !isNaN(d.getTime())) ? d.toLocaleDateString() : '';
+
       const div = document.createElement('div');
       div.className = 'history-entry git-entry';
-      const d = new Date(commit.date);
       div.innerHTML = `
-        <div class="he-time"><span class="he-sha">${commit.sha.slice(0,7)}</span></div>
-        <div class="he-preview">${escapeHtml(commit.message)}</div>
-        <div class="he-author">${escapeHtml(commit.author)} · ${d.toLocaleDateString()}</div>`;
-      div.addEventListener('click', () => loadGitCommit(commit.sha));
+        <div class="he-time"><span class="he-sha"></span></div>
+        <div class="he-preview">${escapeHtml(message)}</div>
+        <div class="he-author">${escapeHtml(author)}${dateStr ? ' · ' + dateStr : ''}</div>`;
+      div.querySelector('.he-sha').textContent = sha.slice(0, 7);
+      div.addEventListener('click', () => loadGitCommit(sha));
       historyList.appendChild(div);
     });
   }
@@ -748,7 +759,15 @@ document.getElementById('btn-git-ok').addEventListener('click', async () => {
     const data = await res.json();
     gitConfig = { serverUrl, filePath };
     editor.value = data.content;
-    currentPassword = null;
+    if (currentPassword !== null) {
+      const disable = confirm(
+        'Loading from git will clear the current encryption password.\n' +
+        'Click OK to disable encryption, or Cancel to keep it.'
+      );
+      if (disable) {
+        currentPassword = null;
+      }
+    }
     updateLockIndicator();
     updatePreview();
     updateStats();
@@ -768,7 +787,8 @@ document.getElementById('btn-git-ok').addEventListener('click', async () => {
     }
     showToast('⎇ Connected to git backend');
   } catch (err) {
-    gitError.textContent = `Connection failed: ${err.message}`;
+    gitError.textContent = 'Connection failed — check the URL and that the backend is running.';
+    console.error('[Git connect]', err);
   }
 });
 gitServerUrl.addEventListener('keydown', e => { if (e.key === 'Enter') gitFilePath.focus(); });
@@ -791,7 +811,7 @@ document.getElementById('btn-git-pull').addEventListener('click', async () => {
     updatePreview(); updateStats(); await updateURL();
     addHistoryEntry(data.content);
     showToast('↓ Pulled latest from git');
-  } catch (err) { showToast(`Pull failed: ${err.message}`, 'error'); }
+  } catch (err) { showToast('Pull failed — check connection', 'error'); console.error(err); }
 });
 
 document.getElementById('btn-git-push').addEventListener('click', async () => {
@@ -809,19 +829,19 @@ document.getElementById('btn-git-push').addEventListener('click', async () => {
     const logRes = await fetch(`${gitConfig.serverUrl}/log?path=${encodeURIComponent(gitConfig.filePath)}`);
     if (logRes.ok) renderHistory(await logRes.json());
     showToast('↑ Pushed to git');
-  } catch (err) { showToast(`Push failed: ${err.message}`, 'error'); }
+  } catch (err) { showToast('Push failed — check connection', 'error'); console.error(err); }
 });
 
 async function loadGitCommit(sha) {
   if (!gitConfig) return;
   try {
-    const res = await fetch(`${gitConfig.serverUrl}/file?path=${encodeURIComponent(gitConfig.filePath)}&sha=${sha}`);
+    const res = await fetch(`${gitConfig.serverUrl}/file?path=${encodeURIComponent(gitConfig.filePath)}&sha=${encodeURIComponent(sha)}`);
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     editor.value = data.content;
     updatePreview(); updateStats(); await updateURL();
     showToast(`Loaded commit ${sha.slice(0,7)}`);
-  } catch (err) { showToast(`Failed to load commit: ${err.message}`, 'error'); }
+  } catch (err) { showToast('Failed to load commit', 'error'); console.error(err); }
 }
 
 // ── Editor events ─────────────────────────────────────────────────────────────

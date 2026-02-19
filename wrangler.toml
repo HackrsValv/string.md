@@ -1,0 +1,13 @@
+name = "string-md"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# Optional: restrict CORS to a specific origin (default is *)
+# [vars]
+# ALLOWED_ORIGIN = "https://your-site.pages.dev"
+
+# Create the KV namespace with: wrangler kv:namespace create STRING_MD_KV
+# Then replace YOUR_KV_NAMESPACE_ID below with the returned id.
+[[kv_namespaces]]
+binding = "STRING_MD_KV"
+id = "YOUR_KV_NAMESPACE_ID"
