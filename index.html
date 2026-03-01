@@ -211,6 +211,19 @@
     #lock-indicator { color: var(--green); }
     #lock-indicator.plain { color: var(--text-dim); }
 
+    /* ── Collaboration bar ── */
+    #collab-bar {
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      background: rgba(88,166,255,0.08);
+      border-bottom: 1px solid rgba(88,166,255,0.25);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
     /* ── Modals ── */
     .modal-overlay {
       position: fixed;
@@ -288,6 +301,7 @@
 <header>
   <span class="logo">string.md</span>
   <div class="toolbar">
+    <button id="btn-collab" title="Start or join a live P2P collaboration session">👥 Live</button>
     <button id="btn-git" title="Connect to git backend">⎇ Git</button>
     <button id="btn-encrypt" title="Encrypt document with a password">🔒 Encrypt</button>
     <button id="btn-share" class="primary" title="Copy shareable URL to clipboard">⎘ Share</button>
@@ -304,6 +318,16 @@
   <button id="btn-git-pull" style="font-size:0.72rem;padding:2px 8px;">↓ Pull</button>
   <button id="btn-git-push" style="font-size:0.72rem;padding:2px 8px;">↑ Push</button>
   <button id="btn-git-disconnect" style="font-size:0.72rem;padding:2px 8px;border-color:var(--red);color:var(--red);">✕</button>
+</div>
+
+<!-- Collaboration bar (shown during a live session) -->
+<div id="collab-bar" class="hidden">
+  <span>👥</span>
+  <span id="collab-room-label"></span>
+  <span id="collab-peer-count" style="color:var(--text-dim);">0 peers</span>
+  <span class="spacer"></span>
+  <button id="btn-collab-copy" style="font-size:0.72rem;padding:2px 8px;">⎘ Copy link</button>
+  <button id="btn-collab-leave" style="font-size:0.72rem;padding:2px 8px;border-color:var(--red);color:var(--red);">✕ Leave</button>
 </div>
 
 <div class="main">
@@ -381,6 +405,20 @@
   </div>
 </div>
 
+<!-- Collaboration modal -->
+<div id="modal-collab" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>👥 Live Collaboration</h2>
+    <p>Co-edit this document in real-time with others. Peers connect directly P2P via <a href="https://github.com/dmotz/trystero" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Trystero</a> — no server required. Share the link once connected.</p>
+    <input type="text" id="collab-room-id" placeholder="Room ID (leave blank to create a new room)" autocomplete="off" />
+    <div id="collab-error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button id="btn-collab-cancel">Cancel</button>
+      <button id="btn-collab-ok" class="primary">Join Room</button>
+    </div>
+  </div>
+</div>
+
 <!-- Bundled libraries (marked v12 + lz-string v1) -->
 <script>
 /**
@@ -413,6 +451,7 @@ let autoSaveTimer     = null;
 let historyEntries    = [];    // [{id, time, content, encrypted}]
 let gitConfig         = null;  // {serverUrl, filePath} when connected
 let pendingDecryptData = null; // base64 payload waiting for password input
+window._collabRoomId  = null;  // set by the collab module when in a live session
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const editor        = document.getElementById('editor');
@@ -505,8 +544,9 @@ async function parseHash(hash) {
 
 async function updateURL() {
   const hash = await buildHash(editor.value, currentPassword);
-  history.replaceState(null, '', hash);
-  urlSize.textContent = `URL: ${(hash.length / 1024).toFixed(1)} KB`;
+  const roomParam = window._collabRoomId ? `?room=${encodeURIComponent(window._collabRoomId)}` : '';
+  history.replaceState(null, '', roomParam + hash);
+  urlSize.textContent = `URL: ${((roomParam + hash).length / 1024).toFixed(1)} KB`;
 }
 
 function scheduleAutoSave() {
@@ -890,6 +930,192 @@ async function init() {
 }
 
 init();
+</script>
+
+<!-- ── Trystero P2P real-time collaboration ──────────────────────────────────
+     Peers connect directly (WebRTC) using the Nostr strategy for signaling.
+     No collaboration server is required.
+     CRD conflict resolution: last-write-wins with per-peer sequence numbers.
+-->
+<script type="module">
+import { joinRoom, selfId } from 'https://esm.run/trystero';
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const editor        = document.getElementById('editor');
+const collabBar     = document.getElementById('collab-bar');
+const collabRoomLbl = document.getElementById('collab-room-label');
+const collabPeerCnt = document.getElementById('collab-peer-count');
+const modalCollab   = document.getElementById('modal-collab');
+const collabRoomIn  = document.getElementById('collab-room-id');
+const collabErrEl   = document.getElementById('collab-error');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let room          = null;   // active Trystero room
+let sendContent   = null;   // action sender
+let localSeq      = 0;      // increments on every local edit we broadcast
+let peerSeq       = {};     // peerId → highest seq seen from that peer
+let peers         = new Set();
+let lastLocalEdit = 0;      // timestamp of last user keystroke
+let isApplying    = false;  // true while writing remote content to editor
+let broadcastTimer = null;  // debounce handle for outbound broadcasts
+
+const APP_ID   = 'string-md';
+const EDIT_GAP = 400; // ms — don't overwrite local edits within this window
+                      // (400 ms gives comfortable pause after last keystroke)
+const ROOM_ID_RE = /^[\w\-]{1,64}$/;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function genRoomId() {
+  const buf = new Uint8Array(5);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function updatePeerCount() {
+  const n = peers.size;
+  collabPeerCnt.textContent = n === 0 ? 'no peers yet'
+    : n === 1 ? '1 peer connected'
+    : `${n} peers connected`;
+}
+
+function collabCopyLink() {
+  const url = location.href;
+  navigator.clipboard.writeText(url).then(
+    () => window.showToast('Collaboration link copied!'),
+    () => prompt('Share this link with collaborators:', url)
+  );
+}
+
+// ── Join / leave ──────────────────────────────────────────────────────────────
+function joinCollabRoom(roomId) {
+  if (room) leaveCollabRoom();
+
+  window._collabRoomId = roomId;
+  // Trigger URL update to embed ?room= so the link is shareable
+  if (typeof window.updateURL === 'function') window.updateURL();
+
+  room = joinRoom({ appId: APP_ID }, roomId);
+
+  const [send, receive] = room.makeAction('content');
+  sendContent = send;
+
+  // New peer joined → send them current content immediately
+  room.onPeerJoin(peerId => {
+    peers.add(peerId);
+    updatePeerCount();
+    sendContent({ seq: localSeq, content: editor.value }, peerId);
+  });
+
+  room.onPeerLeave(peerId => {
+    peers.delete(peerId);
+    delete peerSeq[peerId];
+    updatePeerCount();
+  });
+
+  // Receive content from a peer
+  receive((data, peerId) => {
+    if (!data || typeof data.content !== 'string') return;
+    const seq = typeof data.seq === 'number' ? data.seq : 0;
+
+    // CRD: accept only if this is the latest we've seen from this peer
+    // and the user hasn't typed very recently (avoid clobbering in-progress edits)
+    const prevSeq = peerSeq[peerId] ?? -1;
+    if (seq <= prevSeq) return;
+    peerSeq[peerId] = seq;
+
+    if (Date.now() - lastLocalEdit < EDIT_GAP) return;
+
+    if (data.content !== editor.value) {
+      isApplying = true;
+      const sel = [editor.selectionStart, editor.selectionEnd];
+      editor.value = data.content;
+      editor.selectionStart = sel[0];
+      editor.selectionEnd   = sel[1];
+      isApplying = false;
+      // Reflect the remote change in preview / stats without dirtying history
+      if (typeof window.updatePreview === 'function') window.updatePreview();
+      if (typeof window.updateStats  === 'function') window.updateStats();
+    }
+  });
+
+  collabRoomLbl.textContent = roomId;
+  collabBar.classList.remove('hidden');
+  updatePeerCount();
+}
+
+function leaveCollabRoom() {
+  if (!room) return;
+  clearTimeout(broadcastTimer);
+  broadcastTimer = null;
+  room.leave();
+  room = null;
+  sendContent = null;
+  peers.clear();
+  peerSeq = {};
+  localSeq = 0;
+  window._collabRoomId = null;
+  collabBar.classList.add('hidden');
+  // Strip ?room= from URL
+  history.replaceState(null, '', location.hash || '#');
+}
+
+// ── Broadcast on local edits (debounced) ─────────────────────────────────────
+editor.addEventListener('input', () => {
+  if (isApplying) return;
+  lastLocalEdit = Date.now();
+  if (!sendContent) return;
+  localSeq++;
+  // Debounce: schedule a broadcast ~200 ms after the last keystroke
+  clearTimeout(broadcastTimer);
+  broadcastTimer = setTimeout(() => {
+    if (sendContent) sendContent({ seq: localSeq, content: editor.value });
+  }, 200);
+});
+
+// ── Modal wiring ──────────────────────────────────────────────────────────────
+document.getElementById('btn-collab').addEventListener('click', () => {
+  collabRoomIn.value = window._collabRoomId || '';
+  collabErrEl.textContent = '';
+  modalCollab.classList.remove('hidden');
+  collabRoomIn.focus();
+});
+
+document.getElementById('btn-collab-cancel').addEventListener('click', () => {
+  modalCollab.classList.add('hidden');
+});
+
+document.getElementById('btn-collab-ok').addEventListener('click', () => {
+  const rid = collabRoomIn.value.trim() || genRoomId();
+  if (!ROOM_ID_RE.test(rid)) {
+    collabErrEl.textContent = 'Room ID may only contain letters, digits, - and _.';
+    return;
+  }
+  collabErrEl.textContent = '';
+  modalCollab.classList.add('hidden');
+  joinCollabRoom(rid);
+  window.showToast(`👥 Joined room "${rid}"`);
+});
+
+collabRoomIn.addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-collab-ok').click();
+});
+
+document.getElementById('btn-collab-copy').addEventListener('click', collabCopyLink);
+
+document.getElementById('btn-collab-leave').addEventListener('click', () => {
+  leaveCollabRoom();
+  window.showToast('Left collaboration room');
+});
+
+// ── Auto-join from URL (?room=...) ────────────────────────────────────────────
+(function autoJoinFromURL() {
+  const params = new URLSearchParams(location.search);
+  const rid    = params.get('room');
+  if (!rid) return;
+  if (!ROOM_ID_RE.test(rid)) return;
+  // Wait for the main init() to complete before joining
+  setTimeout(() => joinCollabRoom(rid), 0);
+})();
 </script>
 </body>
 </html>
