@@ -568,5 +568,361 @@ function init() {
 
 window._initReady = init();
 </script>
+<script type="module">
+// ── Nostr Alias Publishing & Resolution ──
+import { generateSecretKey, getPublicKey, finalizeEvent } from 'https://esm.run/nostr-tools@2';
+
+// ── Constants ──
+const NOSTR_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+const NOSTR_KIND = 30078; // NIP-78 application-specific data
+const APP_TAG = 'short.string.md';
+const STORAGE_KEY_SK = 'short_stringmd_sk';
+const STORAGE_KEY_CACHE = 'short_stringmd_cache';
+
+// ── Key Management ──
+function getOrCreateSecretKey() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_SK);
+    if (stored) {
+      const arr = JSON.parse(stored);
+      return new Uint8Array(arr);
+    }
+  } catch { /* generate fresh */ }
+  const sk = generateSecretKey();
+  localStorage.setItem(STORAGE_KEY_SK, JSON.stringify(Array.from(sk)));
+  return sk;
+}
+
+const sk = getOrCreateSecretKey();
+const pk = getPublicKey(sk);
+
+// ── Alias Cache (localStorage) ──
+function loadCache() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY_CACHE)) || {};
+  } catch { return {}; }
+}
+
+function saveCache(cache) {
+  localStorage.setItem(STORAGE_KEY_CACHE, JSON.stringify(cache));
+}
+
+function cacheAlias(alias, targetURL) {
+  const cache = loadCache();
+  cache[alias] = { url: targetURL, ts: Date.now() };
+  saveCache(cache);
+}
+
+function lookupCache(alias) {
+  const cache = loadCache();
+  const entry = cache[alias];
+  return entry ? entry.url : null;
+}
+
+// ── Nostr Relay Communication ──
+function connectRelay(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error('Timeout connecting to ' + url));
+    }, 5000);
+    ws.addEventListener('open', () => {
+      clearTimeout(timer);
+      resolve(ws);
+    });
+    ws.addEventListener('error', () => {
+      clearTimeout(timer);
+      reject(new Error('Error connecting to ' + url));
+    });
+  });
+}
+
+function publishToRelays(event) {
+  return new Promise(async (resolve, reject) => {
+    let successes = 0;
+    let finished = 0;
+    const total = NOSTR_RELAYS.length;
+
+    for (const url of NOSTR_RELAYS) {
+      try {
+        const ws = await connectRelay(url);
+        ws.send(JSON.stringify(['EVENT', event]));
+        ws.addEventListener('message', (msg) => {
+          try {
+            const data = JSON.parse(msg.data);
+            if (data[0] === 'OK' && data[2] === true) successes++;
+          } catch { /* ignore */ }
+          finished++;
+          if (finished === total) {
+            ws.close();
+            successes > 0 ? resolve(successes) : reject(new Error('No relay accepted the event'));
+          }
+        });
+        // Close after 5s regardless
+        setTimeout(() => { try { ws.close(); } catch {} }, 5000);
+      } catch {
+        finished++;
+        if (finished === total) {
+          successes > 0 ? resolve(successes) : reject(new Error('No relay accepted the event'));
+        }
+      }
+    }
+  });
+}
+
+function queryRelays(alias) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const sockets = [];
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        sockets.forEach(ws => { try { ws.close(); } catch {} });
+        resolve(null);
+      }
+    }, 6000);
+
+    const filter = {
+      kinds: [NOSTR_KIND],
+      '#d': [alias],
+      '#t': [APP_TAG],
+      limit: 1,
+    };
+
+    let pending = NOSTR_RELAYS.length;
+
+    for (const url of NOSTR_RELAYS) {
+      connectRelay(url).then(ws => {
+        sockets.push(ws);
+        const subId = 'q_' + Math.random().toString(36).slice(2, 8);
+        ws.send(JSON.stringify(['REQ', subId, filter]));
+        ws.addEventListener('message', (msg) => {
+          try {
+            const data = JSON.parse(msg.data);
+            if (data[0] === 'EVENT' && data[2] && data[2].content && !resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              sockets.forEach(s => { try { s.close(); } catch {} });
+              resolve(data[2].content);
+            }
+            if (data[0] === 'EOSE') {
+              pending--;
+              if (pending <= 0 && !resolved) {
+                resolved = true;
+                clearTimeout(timer);
+                sockets.forEach(s => { try { s.close(); } catch {} });
+                resolve(null);
+              }
+            }
+          } catch { /* ignore */ }
+        });
+      }).catch(() => {
+        pending--;
+        if (pending <= 0 && !resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          sockets.forEach(s => { try { s.close(); } catch {} });
+          resolve(null);
+        }
+      });
+    }
+  });
+}
+
+function createNostrAlias(alias, targetURL) {
+  const event = finalizeEvent({
+    kind: NOSTR_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ['d', alias],
+      ['t', APP_TAG],
+    ],
+    content: targetURL,
+  }, sk);
+
+  return publishToRelays(event).then(count => {
+    cacheAlias(alias, targetURL);
+    return count;
+  });
+}
+
+// ── Short Code Generator ──
+function genShortCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  let num = 0;
+  for (const b of bytes) num = num * 256 + b;
+  return num.toString(36).slice(0, 6);
+}
+
+// ── Wait for init, then wire everything up ──
+await window._initReady;
+
+const $resolveSpinner = document.getElementById('resolve-spinner');
+const $resolveStatus  = document.getElementById('resolve-status');
+const $resolveError   = document.getElementById('resolve-error');
+const $aliasInput     = document.getElementById('alias-input');
+const $aliasBtn       = document.getElementById('alias-btn');
+const $aliasUrl       = document.getElementById('alias-url');
+const $aliasMeta      = document.getElementById('alias-meta');
+const $aliasResult    = document.getElementById('alias-result');
+
+// ── Override resolveAlias ──
+window.resolveAlias = async function resolveAlias(alias) {
+  $resolveSpinner.style.display = '';
+  $resolveError.style.display = 'none';
+
+  // Step 1: Check local cache
+  $resolveStatus.textContent = 'Checking local cache...';
+  const cached = lookupCache(alias);
+  if (cached) {
+    $resolveSpinner.style.display = 'none';
+    $resolveStatus.textContent = 'Found in cache. Redirecting...';
+    window.location.replace(cached);
+    return;
+  }
+
+  // Step 2: P2P placeholder (Task 5)
+
+  // Step 3: Query Nostr relays
+  $resolveStatus.textContent = 'Querying Nostr relays...';
+  const result = await queryRelays(alias);
+  if (result) {
+    cacheAlias(alias, result);
+    $resolveSpinner.style.display = 'none';
+    $resolveStatus.textContent = 'Found on relay. Redirecting...';
+    window.location.replace(result);
+    return;
+  }
+
+  // Step 4: Not found
+  $resolveSpinner.style.display = 'none';
+  $resolveStatus.textContent = '';
+  $resolveError.style.display = '';
+
+  // Build error message with link back to create view using safe DOM methods
+  while ($resolveError.firstChild) $resolveError.removeChild($resolveError.firstChild);
+  const errText = document.createTextNode('Alias not found. ');
+  const errLink = document.createElement('a');
+  errLink.href = '#';
+  errLink.textContent = 'Create a new short link';
+  errLink.style.color = 'var(--accent)';
+  errLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    location.hash = '';
+  });
+  $resolveError.appendChild(errText);
+  $resolveError.appendChild(errLink);
+};
+
+// Also patch the route function's reference
+const _origRoute = window.route || null;
+
+// Override the global resolveAlias so the existing route() calls it
+// The inline script's resolveAlias is in the same scope, so we override on window
+// and also re-define in the original script's closure by re-assigning the function name
+// The existing code calls resolveAlias(alias) directly — since it's a function declaration,
+// we need to make the route function call our version.  We achieve this by overriding on window
+// and patching the hashchange handler.
+
+// Remove old hashchange listener and add new one that uses our resolveAlias
+window.removeEventListener('hashchange', _origRoute);
+window.addEventListener('hashchange', () => {
+  const hash = location.hash || '';
+  if (hash.startsWith('#n/')) {
+    const alias = hash.slice(3);
+    document.getElementById('create-view').style.display = 'none';
+    document.getElementById('resolve-view').style.display = '';
+    window.resolveAlias(alias);
+  } else if (hash.startsWith('#c/')) {
+    const payload = hash.slice(3);
+    const target = window.decompressURL(payload);
+    if (!target) {
+      document.getElementById('create-view').style.display = 'none';
+      document.getElementById('resolve-view').style.display = '';
+      $resolveSpinner.style.display = 'none';
+      $resolveStatus.textContent = '';
+      $resolveError.style.display = '';
+      $resolveError.textContent = 'Failed to decompress URL.';
+      return;
+    }
+    window.location.replace(target);
+  } else if (!hash || hash === '#') {
+    document.getElementById('create-view').style.display = '';
+    document.getElementById('resolve-view').style.display = 'none';
+  } else {
+    document.getElementById('create-view').style.display = 'none';
+    document.getElementById('resolve-view').style.display = '';
+    $resolveSpinner.style.display = 'none';
+    $resolveStatus.textContent = '';
+    $resolveError.style.display = '';
+    $resolveError.textContent = 'Unknown link format.';
+  }
+});
+
+// ── Wire alias creation button ──
+// Replace the placeholder handler by cloning the button
+const oldBtn = $aliasBtn;
+const newBtn = oldBtn.cloneNode(true);
+oldBtn.parentNode.replaceChild(newBtn, oldBtn);
+
+newBtn.addEventListener('click', async () => {
+  const target = window._pendingTarget;
+  if (!target) {
+    window.showToast ? window.showToast('No URL to alias. Shorten a URL first.') : alert('No URL to alias.');
+    return;
+  }
+
+  let alias = $aliasInput.value.trim();
+  if (!alias) alias = genShortCode();
+
+  newBtn.disabled = true;
+  newBtn.textContent = 'Publishing...';
+  $aliasResult.style.display = 'none';
+
+  try {
+    // Check for collision
+    const existing = await queryRelays(alias);
+    if (existing) {
+      newBtn.disabled = false;
+      newBtn.textContent = 'Create';
+      window.showToast ? window.showToast('Alias "' + alias + '" is already taken.') : alert('Alias taken.');
+      return;
+    }
+
+    // Publish
+    const count = await createNostrAlias(alias, target);
+    const shortURL = location.origin + '/#n/' + alias;
+
+    $aliasUrl.textContent = shortURL;
+    $aliasUrl.href = shortURL;
+    $aliasMeta.textContent = 'Published to ' + count + ' relay' + (count !== 1 ? 's' : '') + ' as "' + alias + '"';
+    $aliasResult.style.display = '';
+
+    // Update the copy button's data-copy target
+    const copyBtn = $aliasResult.querySelector('.copy-btn');
+    if (copyBtn) copyBtn.setAttribute('data-copy', 'alias-url');
+
+    // Broadcast for future P2P integration
+    if (typeof window._broadcastMapping === 'function') {
+      window._broadcastMapping(alias, target);
+    }
+  } catch (err) {
+    window.showToast ? window.showToast('Failed to publish alias: ' + err.message) : alert('Publish failed.');
+  } finally {
+    newBtn.disabled = false;
+    newBtn.textContent = 'Create';
+  }
+});
+
+// ── Re-trigger route if hash is #n/ ──
+if (location.hash.startsWith('#n/')) {
+  const alias = location.hash.slice(3);
+  document.getElementById('create-view').style.display = 'none';
+  document.getElementById('resolve-view').style.display = '';
+  window.resolveAlias(alias);
+}
+</script>
 </body>
 </html>
