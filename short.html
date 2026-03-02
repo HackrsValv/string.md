@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>short.string.md</title>
+  <meta name="description" content="Serverless URL shortener. No server, no database, no sign-up." />
+  <meta property="og:title" content="short.string.md" />
+  <meta property="og:description" content="Shorten URLs without a server. Compression + Nostr aliases." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -571,6 +575,7 @@ window._initReady = init();
 <script type="module">
 // ── Nostr Alias Publishing & Resolution ──
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'https://esm.run/nostr-tools@2';
+import { joinRoom } from 'https://esm.run/trystero@0.22.0';
 
 // ── Constants ──
 const NOSTR_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
@@ -783,7 +788,16 @@ window.resolveAlias = async function resolveAlias(alias) {
     return;
   }
 
-  // Step 2: P2P placeholder (Task 5)
+  // Step 2: P2P
+  $resolveStatus.textContent = 'Asking peers...';
+  const p2p = await window._resolveP2P?.(alias);
+  if (p2p) {
+    cacheAlias(alias, p2p);
+    $resolveSpinner.style.display = 'none';
+    $resolveStatus.textContent = 'Found via peer. Redirecting...';
+    setTimeout(() => window.location.replace(p2p), 200);
+    return;
+  }
 
   // Step 3: Query Nostr relays
   $resolveStatus.textContent = 'Querying Nostr relays...';
@@ -860,6 +874,100 @@ window.addEventListener('hashchange', () => {
     $resolveError.textContent = 'Unknown link format.';
   }
 });
+
+// ── P2P Gossip Layer ──
+const P2P_APP_ID = 'short-string-md';
+const P2P_ROOM_ID = 'global';
+let p2pRoom = null;
+let sendMapping = null;
+let sendLookup = null;
+let p2pPeers = new Set();
+const p2pLookupCallbacks = {};
+
+function updatePeerCount() {
+  const el = document.getElementById('peer-count');
+  if (!el) return;
+  const n = p2pPeers.size;
+  el.textContent = n > 0 ? n + ' peer' + (n !== 1 ? 's' : '') : '';
+}
+
+function initP2P() {
+  try {
+    p2pRoom = joinRoom({ appId: P2P_APP_ID }, P2P_ROOM_ID);
+
+    const [sendMap, receiveMap] = p2pRoom.makeAction('mapping');
+    const [sendLkp, receiveLkp] = p2pRoom.makeAction('lookup');
+    const [sendRpl, receiveReply] = p2pRoom.makeAction('reply');
+
+    sendMapping = sendMap;
+    sendLookup = sendLkp;
+
+    p2pRoom.onPeerJoin(peerId => {
+      p2pPeers.add(peerId);
+      updatePeerCount();
+    });
+
+    p2pRoom.onPeerLeave(peerId => {
+      p2pPeers.delete(peerId);
+      updatePeerCount();
+    });
+
+    receiveMap((data) => {
+      if (data && data.alias && data.url) {
+        cacheAlias(data.alias, data.url);
+      }
+    });
+
+    receiveLkp((data, peerId) => {
+      if (data && data.alias) {
+        const url = lookupCache(data.alias);
+        if (url) {
+          sendRpl({ alias: data.alias, url }, peerId);
+        }
+      }
+    });
+
+    receiveReply((data) => {
+      if (data && data.alias && data.url && p2pLookupCallbacks[data.alias]) {
+        p2pLookupCallbacks[data.alias](data.url);
+        delete p2pLookupCallbacks[data.alias];
+      }
+    });
+  } catch (err) {
+    console.warn('P2P init failed:', err);
+  }
+}
+
+function resolveP2P(alias) {
+  return new Promise((resolve) => {
+    if (!p2pRoom || p2pPeers.size === 0) {
+      resolve(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      delete p2pLookupCallbacks[alias];
+      resolve(null);
+    }, 2000);
+
+    p2pLookupCallbacks[alias] = (url) => {
+      clearTimeout(timer);
+      resolve(url);
+    };
+
+    sendLookup({ alias });
+  });
+}
+
+function broadcastMapping(alias, url) {
+  if (sendMapping) {
+    sendMapping({ alias, url });
+  }
+}
+
+window._resolveP2P = resolveP2P;
+window._broadcastMapping = broadcastMapping;
+
+initP2P();
 
 // ── Wire alias creation button ──
 // Replace the placeholder handler by cloning the button
