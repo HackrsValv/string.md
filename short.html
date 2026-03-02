@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>short.string.md</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --panel-bg: #161b22;
+      --border:   #30363d;
+      --accent:   #58a6ff;
+      --text:     #e6edf3;
+      --text-dim: #8b949e;
+      --green:    #3fb950;
+      --red:      #f85149;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 14px;
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      min-height: 42px;
+    }
+
+    .logo {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+      cursor: pointer;
+    }
+
+    .peer-count {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
+
+    /* ── Shared ── */
+    .container {
+      width: 100%;
+      max-width: 640px;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+
+    button {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) { background: rgba(255,255,255,0.07); border-color: var(--accent); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+    button.primary:hover:not(:disabled) { background: #79c0ff; }
+    button.copy-btn { font-size: 0.78rem; padding: 4px 10px; }
+
+    /* ── Create View ── */
+    #create-view textarea {
+      width: 100%;
+      min-height: 80px;
+      background: var(--panel-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #create-view textarea:focus { border-color: var(--accent); }
+    #create-view textarea::placeholder { color: var(--text-dim); }
+
+    .shorten-row {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 0.6rem;
+    }
+
+    /* ── Results ── */
+    #results { margin-top: 1.5rem; display: none; }
+
+    .card {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 1rem;
+    }
+
+    .card-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+
+    .card-url {
+      font-size: 0.92rem;
+      color: var(--accent);
+      word-break: break-all;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .card-url:hover { text-decoration: underline; }
+
+    .card-meta {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    /* ── Alias card ── */
+    .alias-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .alias-row input {
+      flex: 1;
+      background: var(--panel-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.88rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .alias-row input:focus { border-color: var(--accent); }
+    .alias-row input::placeholder { color: var(--text-dim); }
+
+    #alias-result { display: none; margin-top: 10px; }
+
+    /* ── Resolve View ── */
+    #resolve-view {
+      display: none;
+      text-align: center;
+      padding-top: 4rem;
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status-text {
+      font-size: 0.95rem;
+      color: var(--text-dim);
+    }
+
+    .error-msg {
+      color: var(--red);
+      font-size: 0.9rem;
+      margin-top: 0.8rem;
+      display: none;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--panel-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 18px;
+      font-size: 0.85rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s;
+      z-index: 1000;
+    }
+    #toast.show { opacity: 1; pointer-events: auto; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <span class="logo" id="logo">short.string.md</span>
+    <span class="peer-count" id="peer-count"></span>
+  </header>
+
+  <!-- Create View -->
+  <div class="container" id="create-view">
+    <h1>Shorten a URL</h1>
+    <textarea id="url-input" placeholder="Paste a URL here..."></textarea>
+    <div class="shorten-row">
+      <button class="primary" id="shorten-btn" disabled>Shorten</button>
+    </div>
+
+    <!-- Results -->
+    <div id="results">
+      <!-- Compressed card -->
+      <div class="card" id="compressed-card">
+        <div class="card-label">Compressed</div>
+        <a class="card-url" id="compressed-url" target="_blank" rel="noopener"></a>
+        <div class="card-meta" id="compressed-meta"></div>
+        <div class="card-actions">
+          <button class="copy-btn" data-copy="compressed-url">Copy</button>
+        </div>
+      </div>
+
+      <!-- Alias card -->
+      <div class="card" id="alias-card">
+        <div class="card-label">Named Alias</div>
+        <div class="alias-row">
+          <input type="text" id="alias-input" placeholder="my-link (or leave blank for random)" />
+          <button class="primary" id="alias-btn">Create</button>
+        </div>
+        <div id="alias-result">
+          <a class="card-url" id="alias-url" target="_blank" rel="noopener"></a>
+          <div class="card-meta" id="alias-meta"></div>
+          <div class="card-actions">
+            <button class="copy-btn" data-copy="alias-url">Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resolve View -->
+  <div class="container" id="resolve-view">
+    <div class="spinner" id="resolve-spinner"></div>
+    <div class="status-text" id="resolve-status">Resolving...</div>
+    <div class="error-msg" id="resolve-error"></div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <!-- Compression Engine -->
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+  <script>
+// ── Domain Dictionary ──
+const DOMAIN_TO_CODE = {
+  'google.com':         'G',
+  'youtube.com':        'Y',
+  'github.com':         'GH',
+  'reddit.com':         'R',
+  'twitter.com':        'TW',
+  'x.com':              'X',
+  'wikipedia.org':      'W',
+  'en.wikipedia.org':   'WE',
+  'amazon.com':         'AZ',
+  'stackoverflow.com':  'SO',
+  'linkedin.com':       'LI',
+  'facebook.com':       'FB',
+  'instagram.com':      'IG',
+  'tiktok.com':         'TK',
+  'twitch.tv':          'TV',
+  'discord.com':        'DC',
+  'discord.gg':         'DG',
+  'notion.so':          'NO',
+  'docs.google.com':    'GD',
+  'drive.google.com':   'GR',
+  'mail.google.com':    'GM',
+  'maps.google.com':    'GP',
+  'figma.com':          'FG',
+  'medium.com':         'MD',
+  'npmjs.com':          'NP',
+  'string.md':          'SM',
+  'short.string.md':    'SS',
+};
+const CODE_TO_DOMAIN = Object.fromEntries(
+  Object.entries(DOMAIN_TO_CODE).map(([d, c]) => [c, d])
+);
+
+/**
+ * Compress a URL string for embedding in a hash fragment.
+ * Format: [S|H][domainCode|host]\t[pathname+search+hash]
+ *   S = secure (https), H = http
+ */
+function compressURL(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return null; }
+
+  const secure = parsed.protocol === 'https:';
+  const prefix = secure ? 'S' : 'H';
+  const host = parsed.hostname + (parsed.port ? ':' + parsed.port : '');
+
+  // Try longest match first (e.g. docs.google.com before google.com)
+  let domainPart = null;
+  const sortedDomains = Object.keys(DOMAIN_TO_CODE).sort((a, b) => b.length - a.length);
+  for (const domain of sortedDomains) {
+    if (host === domain || host === 'www.' + domain) {
+      domainPart = DOMAIN_TO_CODE[domain];
+      break;
+    }
+  }
+  if (!domainPart) domainPart = host;
+
+  const rest = parsed.pathname + parsed.search + parsed.hash;
+  const raw = prefix + domainPart + '\t' + rest;
+  return LZString.compressToEncodedURIComponent(raw);
+}
+
+/**
+ * Decompress a hash fragment back into a full URL.
+ */
+function decompressURL(compressed) {
+  let raw;
+  try { raw = LZString.decompressFromEncodedURIComponent(compressed); } catch { return null; }
+  if (!raw) return null;
+
+  const prefix = raw[0]; // S or H
+  if (prefix !== 'S' && prefix !== 'H') return null;
+
+  const protocol = prefix === 'S' ? 'https://' : 'http://';
+  const tabIdx = raw.indexOf('\t');
+  if (tabIdx === -1) return null;
+
+  const domainPart = raw.slice(1, tabIdx);
+  const rest = raw.slice(tabIdx + 1);
+
+  const host = CODE_TO_DOMAIN[domainPart] || domainPart;
+  return protocol + host + rest;
+}
+
+window.compressURL = compressURL;
+window.decompressURL = decompressURL;
+
+// ── Constants ──
+const ORIGIN = location.origin;
+
+function makeCompressedURL(url) {
+  return ORIGIN + '/#c/' + compressURL(url);
+}
+
+// ── DOM refs ──
+const $createView    = document.getElementById('create-view');
+const $resolveView   = document.getElementById('resolve-view');
+const $resolveSpinner = document.getElementById('resolve-spinner');
+const $resolveStatus = document.getElementById('resolve-status');
+const $resolveError  = document.getElementById('resolve-error');
+const $urlInput      = document.getElementById('url-input');
+const $shortenBtn    = document.getElementById('shorten-btn');
+const $results       = document.getElementById('results');
+const $compressedUrl = document.getElementById('compressed-url');
+const $compressedMeta = document.getElementById('compressed-meta');
+const $aliasInput    = document.getElementById('alias-input');
+const $aliasBtn      = document.getElementById('alias-btn');
+const $aliasResult   = document.getElementById('alias-result');
+const $aliasUrl      = document.getElementById('alias-url');
+const $aliasMeta     = document.getElementById('alias-meta');
+const $toast         = document.getElementById('toast');
+const $logo          = document.getElementById('logo');
+
+// ── Routing ──
+function route() {
+  const hash = location.hash || '';
+
+  if (!hash || hash === '#') {
+    // Show create view
+    $createView.style.display = '';
+    $resolveView.style.display = 'none';
+    return;
+  }
+
+  if (hash.startsWith('#c/')) {
+    const payload = hash.slice(3);
+    const target = decompressURL(payload);
+    if (!target) {
+      showResolveError('Failed to decompress URL.');
+      return;
+    }
+    window.location.replace(target);
+    return;
+  }
+
+  if (hash.startsWith('#n/')) {
+    const alias = hash.slice(3);
+    $createView.style.display = 'none';
+    $resolveView.style.display = '';
+    resolveAlias(alias);
+    return;
+  }
+
+  // Unknown hash
+  showResolveError('Unknown link format.');
+}
+
+function showResolveError(msg) {
+  $createView.style.display = 'none';
+  $resolveView.style.display = '';
+  $resolveSpinner.style.display = 'none';
+  $resolveStatus.textContent = '';
+  $resolveError.style.display = '';
+  $resolveError.textContent = msg;
+}
+
+function resolveAlias(alias) {
+  $resolveSpinner.style.display = '';
+  $resolveStatus.textContent = 'Resolving alias...';
+  $resolveError.style.display = 'none';
+
+  // Placeholder -- real implementation will come with Trystero / KV
+  setTimeout(() => {
+    $resolveSpinner.style.display = 'none';
+    $resolveStatus.textContent = '';
+    $resolveError.style.display = '';
+    $resolveError.textContent = 'Alias resolution is not yet implemented.';
+  }, 600);
+}
+
+// ── Toast ──
+let _toastTimer;
+function showToast(msg) {
+  $toast.textContent = msg;
+  $toast.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => $toast.classList.remove('show'), 2200);
+}
+
+// ── Init ──
+function init() {
+  route();
+
+  // Enable shorten button when input has content
+  $urlInput.addEventListener('input', () => {
+    $shortenBtn.disabled = !$urlInput.value.trim();
+  });
+
+  // Shorten button click
+  $shortenBtn.addEventListener('click', () => {
+    let raw = $urlInput.value.trim();
+    if (!raw) return;
+
+    // Auto-add https:// if no protocol
+    if (!/^https?:\/\//i.test(raw)) {
+      raw = 'https://' + raw;
+    }
+
+    // Validate URL
+    let parsed;
+    try { parsed = new URL(raw); } catch {
+      showToast('Invalid URL');
+      return;
+    }
+
+    const compressed = compressURL(raw);
+    if (!compressed) {
+      showToast('Could not compress URL');
+      return;
+    }
+
+    const shortURL = ORIGIN + '/#c/' + compressed;
+    const originalLen = raw.length;
+    const shortLen = shortURL.length;
+
+    // Show results
+    $results.style.display = '';
+
+    $compressedUrl.textContent = shortURL;
+    $compressedUrl.href = shortURL;
+    $compressedMeta.textContent = `${originalLen} chars → ${shortLen} chars (${shortLen < originalLen ? '-' : '+'}${Math.abs(shortLen - originalLen)})`;
+
+    // Reset alias card
+    $aliasResult.style.display = 'none';
+    $aliasInput.value = '';
+
+    // Store for alias creation later
+    window._pendingTarget = raw;
+  });
+
+  // Copy buttons
+  document.querySelectorAll('.copy-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-copy');
+      const el = document.getElementById(targetId);
+      if (!el) return;
+      const text = el.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Copied!');
+      }).catch(() => {
+        showToast('Copy failed');
+      });
+    });
+  });
+
+  // Click result URLs to open in new tab
+  document.querySelectorAll('.card-url').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.open(link.href || link.textContent, '_blank', 'noopener');
+    });
+  });
+
+  // Alias input sanitization — strip non [\w\-]
+  $aliasInput.addEventListener('input', () => {
+    const cleaned = $aliasInput.value.replace(/[^\w\-]/g, '');
+    if (cleaned !== $aliasInput.value) $aliasInput.value = cleaned;
+  });
+
+  // Alias create button (placeholder)
+  $aliasBtn.addEventListener('click', () => {
+    showToast('Alias creation is not yet implemented.');
+  });
+
+  // Click logo / h1 to reset
+  const resetToCreate = () => {
+    location.hash = '';
+    $createView.style.display = '';
+    $resolveView.style.display = 'none';
+    $results.style.display = 'none';
+    $urlInput.value = '';
+    $shortenBtn.disabled = true;
+  };
+  $logo.addEventListener('click', resetToCreate);
+  document.querySelector('#create-view h1').addEventListener('click', resetToCreate);
+
+  // Listen for hash changes
+  window.addEventListener('hashchange', route);
+}
+
+window._initReady = init();
+</script>
+</body>
+</html>
