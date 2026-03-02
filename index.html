@@ -929,7 +929,7 @@ async function init() {
   renderHistory();
 }
 
-init();
+window._initReady = init();
 </script>
 
 <!-- ── Trystero P2P real-time collaboration ──────────────────────────────────
@@ -938,7 +938,7 @@ init();
      CRD conflict resolution: last-write-wins with per-peer sequence numbers.
 -->
 <script type="module">
-import { joinRoom, selfId } from 'https://esm.run/trystero';
+import { joinRoom } from 'https://esm.run/trystero@0.22.0';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const editor        = document.getElementById('editor');
@@ -1021,12 +1021,17 @@ function joinCollabRoom(roomId) {
     // and the user hasn't typed very recently (avoid clobbering in-progress edits)
     const prevSeq = peerSeq[peerId] ?? -1;
     if (seq <= prevSeq) return;
-    peerSeq[peerId] = seq;
 
     if (Date.now() - lastLocalEdit < EDIT_GAP) return;
 
+    // Only advance the peer sequence once we're sure we're accepting this update
+    peerSeq[peerId] = seq;
+
     if (data.content !== editor.value) {
       isApplying = true;
+      // NOTE: cursor is restored to the same absolute offsets. In last-write-wins
+      // mode this may jump if the remote edit inserted/deleted text before the
+      // cursor — a known trade-off of full-document sync without OT/CRDT.
       const sel = [editor.selectionStart, editor.selectionEnd];
       editor.value = data.content;
       editor.selectionStart = sel[0];
@@ -1055,8 +1060,9 @@ function leaveCollabRoom() {
   localSeq = 0;
   window._collabRoomId = null;
   collabBar.classList.add('hidden');
-  // Strip ?room= from URL
-  history.replaceState(null, '', location.hash || '#');
+  // Strip ?room= from URL and refresh the URL size indicator
+  if (typeof window.updateURL === 'function') window.updateURL();
+  else history.replaceState(null, '', location.hash || '#');
 }
 
 // ── Broadcast on local edits (debounced) ─────────────────────────────────────
@@ -1108,13 +1114,21 @@ document.getElementById('btn-collab-leave').addEventListener('click', () => {
 });
 
 // ── Auto-join from URL (?room=...) ────────────────────────────────────────────
-(function autoJoinFromURL() {
+(async function autoJoinFromURL() {
   const params = new URLSearchParams(location.search);
   const rid    = params.get('room');
   if (!rid) return;
   if (!ROOM_ID_RE.test(rid)) return;
-  // Wait for the main init() to complete before joining
-  setTimeout(() => joinCollabRoom(rid), 0);
+  // Await init() so that parseHash / updateURL have fully resolved before we
+  // set _collabRoomId (which updateURL reads) and call joinCollabRoom.
+  try {
+    if (window._initReady && typeof window._initReady.then === 'function') {
+      await window._initReady;
+    }
+  } catch {
+    // Ignore initialization errors for the purposes of auto-join
+  }
+  joinCollabRoom(rid);
 })();
 </script>
 </body>
